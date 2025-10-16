@@ -52,7 +52,7 @@ sock.ev.on('creds.update', async () => {
   console.log('💾 Credenciales actualizadas en auth_backup.json');
 });
 
-let latestQR = null;
+
 sock.ev.on('connection.update', (update) => {
   const { qr, connection, lastDisconnect } = update;
 
