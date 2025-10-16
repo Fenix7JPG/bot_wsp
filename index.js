@@ -1,68 +1,98 @@
+import fs from 'fs';
 import express from 'express';
 import bodyParser from 'body-parser';
 import qrcode from 'qrcode';
-import { makeWASocket, useSingleFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import { makeWASocket, DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY || 'cambia_esto';
-const AUTH_PATH = process.env.AUTH_PATH || '/auth_info.json'; // usa /data en Render (disk)
+const AUTH_DIR = './auth_data';
+const AUTH_PATH = process.env.AUTH_PATH || './auth_info.json'; // usa /data en Render (disk)
 let latestQR = null;
 
+
+// Asegurar carpeta
+fs.mkdirSync(AUTH_DIR, { recursive: true });
+
+/**
+ * Si ya existe auth_backup.json, restaurar su contenido a los archivos de Baileys
+ */
+/**
+if (fs.existsSync(BACKUP_FILE)) {
+  console.log('🔁 Restaurando sesión desde auth_backup.json...');
+  const backup = JSON.parse(fs.readFileSync(BACKUP_FILE, 'utf8'));
+  for (const [filename, content] of Object.entries(backup)) {
+    fs.writeFileSync(`${AUTH_DIR}/${filename}`, content);
+  }
+}
+*/
 const app = express();
 app.use(bodyParser.json());
 
-// auth state (single-file) - guarda en /data para persistir
-const { state, saveState } = await useSingleFileAuthState(AUTH_PATH);
+// Inicializar autenticación
+const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
-// crea socket
 const sock = makeWASocket({
   auth: state,
-  printQRInTerminal: false
+  printQRInTerminal: false,
 });
 
-sock.ev.on('creds.update', saveState);
+// Guardar credenciales cuando cambien
+sock.ev.on('creds.update', async () => {
+  await saveCreds();
 
+  // Guardar backup en un solo archivo JSON
+  const files = fs.readdirSync(AUTH_DIR);
+  const backup = {};
+  for (const file of files) {
+    const content = fs.readFileSync(`${AUTH_DIR}/${file}`, 'utf8');
+    backup[file] = content;
+  }
+  fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2));
+  console.log('💾 Credenciales actualizadas en auth_backup.json');
+});
+
+let latestQR = null;
 sock.ev.on('connection.update', (update) => {
-  // update puede contener 'qr' string, 'connection' y 'lastDisconnect'
-  if (update.qr) {
-    latestQR = update.qr; // string que puedes convertir a imagen
+  const { qr, connection, lastDisconnect } = update;
+
+  if (qr) {
+    latestQR = qr;
+    console.log('📱 Nuevo QR generado. Usa el endpoint /qr para verlo.');
   }
-  if (update.connection === 'open') {
+
+  if (connection === 'open') {
     latestQR = null;
-    console.log('✅ Conectado a WhatsApp');
+    console.log(`✅ Conectado como ${sock.user?.id}`);
   }
-  if (update.lastDisconnect) {
-    const reason = update.lastDisconnect.error?.output?.statusCode || update.lastDisconnect.error;
-    console.log('Desconectado:', reason);
+
+  if (connection === 'close') {
+    console.log('❌ Desconectado:', lastDisconnect?.error || lastDisconnect);
   }
 });
 
-// middleware api-key simple
+// Middleware de API key
 function requireKey(req, res, next) {
   const key = (req.headers['authorization'] || '').replace('Bearer ', '');
   if (key !== API_KEY) return res.status(401).json({ ok: false, error: 'unauthorized' });
   next();
 }
 
-// endpoint para ver estado
+// Endpoints
 app.get('/status', requireKey, (req, res) => {
   res.json({ connected: !!sock.user, user: sock.user || null });
 });
 
-// endpoint para pedir QR (para emparejar la primera vez)
 app.get('/qr', requireKey, async (req, res) => {
-  if (!latestQR) return res.json({ ok: false, qr: null, msg: 'No hay QR activo. ¿Ya emparejaste?' });
-  // devuelve dataURL de imagen para mostrar en navegador
+  if (!latestQR) return res.json({ ok: false, message: 'No hay QR activo' });
   const dataUrl = await qrcode.toDataURL(latestQR);
-  res.json({ ok: true, dataUrl });
+  res.json({ ok: true, qr: dataUrl });
 });
 
-// endpoint para enviar mensaje (bridge para Python)
 app.post('/send', requireKey, async (req, res) => {
   try {
     const { to, text } = req.body;
-    if (!to || !text) return res.status(400).json({ ok: false, error: 'to y text son requeridos' });
-    // to debe tener formato '519XXXXXXXX@s.whatsapp.net' o simplemente '519XXXXXXXX'
+    if (!to || !text) return res.status(400).json({ ok: false, error: 'Faltan parámetros' });
     const jid = to.includes('@') ? to : `${to}@s.whatsapp.net`;
     const result = await sock.sendMessage(jid, { text });
     res.json({ ok: true, result });
@@ -72,4 +102,4 @@ app.post('/send', requireKey, async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Listening on ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Servidor activo en puerto ${PORT}`));
