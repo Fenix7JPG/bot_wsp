@@ -5,7 +5,7 @@ import { makeWASocket, useSingleFileAuthState, DisconnectReason } from '@whiskey
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY || 'cambia_esto';
-const AUTH_PATH = process.env.AUTH_PATH || '/data/auth_info.json'; // usa /data en Render (disk)
+const AUTH_PATH = process.env.AUTH_PATH || '/auth_info.json'; // usa /data en Render (disk)
 let latestQR = null;
 
 const app = express();
