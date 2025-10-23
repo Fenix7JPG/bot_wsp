@@ -1,105 +1,69 @@
-import fs from 'fs';
-import express from 'express';
-import bodyParser from 'body-parser';
-import qrcode from 'qrcode';
-import { makeWASocket, DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, fetchLatestBaileysVersion } from '@whiskeysockets/baileys'
+import P from 'pino'
+import fs from 'fs'
 
-const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.API_KEY || 'cambia_esto';
-const AUTH_DIR = './auth_data';
-const AUTH_PATH = process.env.AUTH_PATH || './auth_info.json'; // usa /data en Render (disk)
-let latestQR = null;
+const AUTH_FILE = './auth.json'
+
+async function conexion(number,code) {
+  const authPath = './auth_data'
+  if (!fs.existsSync(authPath)) fs.mkdirSync(authPath)
+
+  // MultiFile internamente
+  const { state, saveCreds } = await useMultiFileAuthState(authPath)
+  const { version } = await fetchLatestBaileysVersion()
+
+  const sock = makeWASocket({
+    version,
+    auth: state,
+    printQRInTerminal: false,
+    logger: P({ level: 'silent' }),
+  })
+
+  // Cada vez que se actualizan credenciales, guardarlas en un solo JSON
+  sock.ev.on('creds.update', async () => {
+    await saveCreds()
+    fs.writeFileSync(AUTH_FILE, JSON.stringify(state, null, 2))
+  })
+
+  sock.ev.on('connection.update', (update) => {
+    const { connection, lastDisconnect } = update
+    if (connection === 'connecting') console.log('🔌 Conectando...')
+    if ((connection === 'open')) console.log('✅ Conectado con WhatsApp Web!')
+    if (connection === 'close') {
+      console.log('❌ Conexión cerrada')
+      if (lastDisconnect?.error?.output?.statusCode !== 401) {
+        
+        console.log('♻️ Puedes reconectar manualmente ejecutando la función de conexión')
+
+        return conexion(number,code)
 
 
-// Asegurar carpeta
-fs.mkdirSync(AUTH_DIR, { recursive: true });
-
-/**
- * Si ya existe auth_backup.json, restaurar su contenido a los archivos de Baileys
- */
-/**
-if (fs.existsSync(BACKUP_FILE)) {
-  console.log('🔁 Restaurando sesión desde auth_backup.json...');
-  const backup = JSON.parse(fs.readFileSync(BACKUP_FILE, 'utf8'));
-  for (const [filename, content] of Object.entries(backup)) {
-    fs.writeFileSync(`${AUTH_DIR}/${filename}`, content);
+      }
+    }
+  })
+  if (!state.creds?.registered) {
+    await new Promise(res => setTimeout(res, 2000))
+    const _code = await sock.requestPairingCode(number,code)
+    console.log('📱 Tu código de emparejamiento es:', _code)
   }
-}
-*/
-const app = express();
-app.use(bodyParser.json());
-
-// Inicializar autenticación
-const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-
-const sock = makeWASocket({
-  auth: state,
-  printQRInTerminal: false,
-});
-
-// Guardar credenciales cuando cambien
-sock.ev.on('creds.update', async () => {
-  await saveCreds();
-
-  // Guardar backup en un solo archivo JSON
-  const files = fs.readdirSync(AUTH_DIR);
-  const backup = {};
-  for (const file of files) {
-    const content = fs.readFileSync(`${AUTH_DIR}/${file}`, 'utf8');
-    backup[file] = content;
-  }
-  fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2));
-  console.log('💾 Credenciales actualizadas en auth_backup.json');
-});
-
-
-sock.ev.on('connection.update', (update) => {
-  const { qr, connection, lastDisconnect } = update;
-
-  if (qr) {
-    latestQR = qr;
-    console.log('📱 Nuevo QR generado. Usa el endpoint /qr para verlo.');
-  }
-
-  if (connection === 'open') {
-    latestQR = null;
-    console.log(`✅ Conectado como ${sock.user?.id}`);
-  }
-
-  if (connection === 'close') {
-    console.log('❌ Desconectado:', lastDisconnect?.error || lastDisconnect);
-  }
-});
-
-// Middleware de API key
-function requireKey(req, res, next) {
-  const key = (req.headers['authorization'] || '').replace('Bearer ', '');
-  if (key !== API_KEY) return res.status(401).json({ ok: false, error: 'unauthorized' });
-  next();
+  return sock
 }
 
-// Endpoints
-app.get('/status', requireKey, (req, res) => {
-  res.json({ connected: !!sock.user, user: sock.user || null });
-});
+async function start(sock) {
+  sock.ev.on('messages.upsert', async (m) => {
+    const msg = m.messages[0]
+    const from = msg.key.remoteJid
+    const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text
+    if (text?.toLowerCase() === '.hola') {
+      await sock.sendMessage(from, { text: '¡Hola! 😄' })
+    }
+  })
+}
 
-app.get('/qr', requireKey, async (req, res) => {
-  if (!latestQR) return res.json({ ok: false, message: 'No hay QR activo' });
-  const dataUrl = await qrcode.toDataURL(latestQR);
-  res.json({ ok: true, qr: dataUrl });
-});
+// Función principal
+async function main() {
+  const sock = await conexion("51947266830","WAZAWAZA")
+  start(sock)
+}
 
-app.post('/send', requireKey, async (req, res) => {
-  try {
-    const { to, text } = req.body;
-    if (!to || !text) return res.status(400).json({ ok: false, error: 'Faltan parámetros' });
-    const jid = to.includes('@') ? to : `${to}@s.whatsapp.net`;
-    const result = await sock.sendMessage(jid, { text });
-    res.json({ ok: true, result });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ ok: false, error: err.toString() });
-  }
-});
-
-app.listen(PORT, () => console.log(`🚀 Servidor activo en puerto ${PORT}`));
+main()

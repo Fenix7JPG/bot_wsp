@@ -1,14 +1,9 @@
 {
-  "name": "wa-baileys-bridge",
-  "version": "1.0.0",
   "type": "module",
-  "scripts": {
-    "start": "node index.js"
-  },
   "dependencies": {
-    "@whiskeysockets/baileys": "6.7.20",
-    "express": "^4.18.2",
-    "body-parser": "^1.20.2",
-    "qrcode": "^1.5.1"
-}
+    "@whiskeysockets/baileys": "^7.0.0-rc.6",
+    "pino": "^8.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "usesinglefileauthstate": "github:Debanjan-San/useSingleFileAuthState"
+  }
 }
